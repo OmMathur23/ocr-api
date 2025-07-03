@@ -1,6 +1,6 @@
-# Passport & Document OCR API
+# Document OCR API
 
-This is a Flask-based document parsing API that performs OCR and structured field extraction from scanned identity documents like passports, PAN, Aadhaar, and more.
+This is a Flask-based document parsing API that performs OCR and structured field extraction from scanned identity documents like passports, PAN, Aadhaar,Cheques, Driving Licenses and more.
 
 It uses *PaddleOCR* , *Tesseract* , etc  under the hood with custom logic for smart field parsing, image preprocessing, and orientation correction.
 
