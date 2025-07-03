@@ -114,7 +114,7 @@ app = Flask(__name__)
 
 
 
-app.config["JWT_SECRET_KEY"] = "Sudhnashu@123"  # Replace with a strong secret key
+#app.config["JWT_SECRET_KEY"] = "Om@123"  # Replace with a strong secret key
 
 jwt = JWTManager(app)
 
@@ -5731,7 +5731,7 @@ def extract_passport_combined():
 # if __name__ == '__main__':
 #     app.run(host='0.0.0.0', port=5008, debug=True)
 if (__name__ == "__main__"):
-    print('sudhanshu chal gya ')
+    print('om chal gya ')
 #     # socketio.run(app, host = "0.0.0.0", port=5107)
     # http = WSGIServer(('0.0.0.0',5008), app)
     # http.serve_forever()
