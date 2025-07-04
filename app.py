@@ -5725,7 +5725,8 @@ def extract_passport_combined():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
     
-from flask import send_file
+
+# masking adhar num api
 
 def mask_aadhaar_number(img, ocr_result):
     print("[mask_aadhaar_number] Scanning OCR results...")
@@ -5745,7 +5746,6 @@ def mask_aadhaar_number(img, ocr_result):
             if len(aadhaar_digits) == 12:
                 print(f"[match] Aadhaar detected: {aadhaar_raw} at approx {tuple(map(int, box[0]))}")
 
-                # Filter out false positives by box height
                 box_arr = np.array(box).astype(int)
                 x_min = min(pt[0] for pt in box_arr)
                 x_max = max(pt[0] for pt in box_arr)
@@ -5755,23 +5755,29 @@ def mask_aadhaar_number(img, ocr_result):
                 width = x_max - x_min
                 height = y_max - y_min
 
-                if height > 60 or height < 15:
+                print(f"[box] width={width}, height={height}")
+
+                if height > 100 or height < 10:
                     print("[skip] Bounding box height too extreme, skipping...")
                     continue
 
-                # Mask first 8 digits only
-                total_digits = 12
-                digits_to_mask = 8
-                mask_width = int((digits_to_mask / total_digits) * width)
+                h, w = img.shape[:2]
+                x_min = max(0, x_min)
+                y_min = max(0, y_min)
+                x_max = min(w, x_max)
+                y_max = min(h, y_max)
 
-                cv2.rectangle(img, (x_min, y_min), (x_min + mask_width, y_max), (0, 0, 0), thickness=-1)
+                print(f"[masking] Aadhaar digits: {aadhaar_digits}, Mask width: FULL ({width})")
+
+                char_width = (x_max - x_min) // 12
+                mask_end_x = x_min + char_width * 8
+
+                cv2.rectangle(img, (x_min, y_min), (mask_end_x, y_max), (0, 0, 0), thickness=-1)
+
                 matches += 1
-
                 if matches >= 2:
-                    break  # Mask only two Aadhaar numbers max
-
+                    break  
     return img
-
 
 
 
@@ -5808,6 +5814,8 @@ def mask_aadhaar_api():
         angle = detect_osd_angle(preprocessed_img)
 
     preprocessed_img = correct_rotation(preprocessed_img, angle)
+    original_img = correct_rotation(original_img, angle)
+
     preprocessed_img = upscale_image(preprocessed_img, scale=2.0)
     preprocessed_img = enhance_contrast_and_sharpen(preprocessed_img)
 
@@ -5828,12 +5836,82 @@ def mask_aadhaar_api():
         print(line[1][0])
 
     masked_img = mask_aadhaar_number(original_img, combined_ocr)
+    base64_img = image_to_base64(masked_img)
 
-    out_path = "/tmp/masked_aadhaar.jpg"
-    cv2.imwrite(out_path, masked_img)
-    cv2.imwrite("mask.png", masked_img)
+    return jsonify({
+        "success": True,
+        "masked_image_base64": base64_img
+    })
 
-    return send_file(out_path, mimetype='image/jpeg')
+
+@app.route("/api/mask-aadhaar-url", methods=["POST"])
+def mask_aadhaar_by_url_api():
+    file_url = request.form.get("file_url") or (request.get_json() or {}).get("file_url")
+    if not file_url:
+        return jsonify({"success": False, "error": "No file URL provided"}), 400
+
+    temp_path = "/tmp/aadhaar_input.jpg"
+
+    try:
+        response = requests.get(file_url, stream=True)
+        if response.status_code != 200:
+            return jsonify({"success": False, "error": "Failed to download file from URL"}), 400
+
+        content_type = response.headers.get("Content-Type", "").lower()
+        file_bytes = BytesIO(response.content)
+
+        # Handle PDF or image
+        if "pdf" in content_type or file_url.lower().endswith(".pdf"):
+            file_bytes.seek(0)
+            success = convert_pdf_to_image(file_bytes, temp_path)
+            if not success:
+                return jsonify({"success": False, "error": "PDF conversion failed"}), 500
+            img = cv2.imread(temp_path)
+        else:
+            file_bytes.seek(0)
+            img_array = np.asarray(bytearray(file_bytes.read()), dtype=np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    if img is None:
+        return jsonify({"success": False, "error": "Invalid image"}), 400
+
+    original_img = img.copy()
+    preprocessed_img = img.copy()
+
+    try:
+        angle = detect_osd_angle(preprocessed_img)
+    except pytesseract.TesseractError:
+        preprocessed_img = preprocess_for_osd(preprocessed_img)
+        angle = detect_osd_angle(preprocessed_img)
+
+    preprocessed_img = correct_rotation(preprocessed_img, angle)
+    preprocessed_img = upscale_image(preprocessed_img, scale=2.0)
+    preprocessed_img = enhance_contrast_and_sharpen(preprocessed_img)
+
+    ocr_raw = paddle.ocr(original_img)
+    ocr_pre = paddle.ocr(preprocessed_img)
+
+    combined_ocr = [ocr_raw[0] + ocr_pre[0]]
+
+    print("\n--- OCR RAW ---")
+    for line in ocr_raw[0]:
+        print(line[1][0])
+
+    print("\n--- OCR PREPROCESSED ---")
+    for line in ocr_pre[0]:
+        print(line[1][0])
+
+    masked_img = mask_aadhaar_number(original_img, combined_ocr)
+    base64_img = image_to_base64(masked_img)
+
+    return jsonify({
+        "success": True,
+        "masked_image_base64": base64_img
+    })
+
 
 
 # if __name__ == '__main__':
