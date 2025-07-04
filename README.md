@@ -13,7 +13,7 @@ It uses *PaddleOCR* , *Tesseract* , etc  under the hood with custom logic for sm
 -  Image enhancement (contrast, sharpening, upscaling)
 -  Smart field parsing 
 -  PDF-to-Image conversion
--  API-based architecture (ready for LangChain Q&A)
+-  Masking Aadhar number's first 8 digits
 
 ---
 
