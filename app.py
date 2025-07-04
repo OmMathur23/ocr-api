@@ -5402,9 +5402,9 @@ def preprocess_for_osd(image):
     if h < 800:
         image = cv2.resize(image, (w*2, h*2), interpolation=cv2.INTER_CUBIC)
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrast_img = clahe.apply(gray)
+    contrast_img = clahe.apply(image)
 
     return contrast_img
 
@@ -5702,7 +5702,6 @@ def extract_passport_combined():
         img_rear = process_image(file_rear)
         img_rear = upscale_image(img_rear, 2.0)
         img_rear = enhance_contrast_and_sharpen(img_rear)
-        cv2.imwrite("passportcheck.png",img_rear)
         results = paddle.ocr(img_rear, cls=True)
         text_rear = '\n'.join([line[1][0] for box in results for line in box])
 
@@ -5725,7 +5724,116 @@ def extract_passport_combined():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+    
+from flask import send_file
 
+def mask_aadhaar_number(img, ocr_result):
+    print("[mask_aadhaar_number] Scanning OCR results...")
+    aadhaar_regex = re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\b")
+
+    matches = 0
+
+    for line in ocr_result[0]:
+        box, (text, conf) = line
+        cleaned_text = text.replace("O", "0").replace("I", "1").replace("|", "1")
+
+        match = aadhaar_regex.search(cleaned_text)
+        if match:
+            aadhaar_raw = match.group(0)
+            aadhaar_digits = re.sub(r"\D", "", aadhaar_raw)
+
+            if len(aadhaar_digits) == 12:
+                print(f"[match] Aadhaar detected: {aadhaar_raw} at approx {tuple(map(int, box[0]))}")
+
+                # Filter out false positives by box height
+                box_arr = np.array(box).astype(int)
+                x_min = min(pt[0] for pt in box_arr)
+                x_max = max(pt[0] for pt in box_arr)
+                y_min = min(pt[1] for pt in box_arr)
+                y_max = max(pt[1] for pt in box_arr)
+
+                width = x_max - x_min
+                height = y_max - y_min
+
+                if height > 60 or height < 15:
+                    print("[skip] Bounding box height too extreme, skipping...")
+                    continue
+
+                # Mask first 8 digits only
+                total_digits = 12
+                digits_to_mask = 8
+                mask_width = int((digits_to_mask / total_digits) * width)
+
+                cv2.rectangle(img, (x_min, y_min), (x_min + mask_width, y_max), (0, 0, 0), thickness=-1)
+                matches += 1
+
+                if matches >= 2:
+                    break  # Mask only two Aadhaar numbers max
+
+    return img
+
+
+
+
+@app.route("/api/mask-aadhaar", methods=["POST"])
+def mask_aadhaar_api():
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"success": False, "error": "No file uploaded"}), 400
+
+    filename = file.filename.lower()
+    temp_path = "/tmp/aadhaar_input.jpg"
+
+    if filename.endswith(".pdf"):
+        file.stream.seek(0)
+        success = convert_pdf_to_image(file, temp_path)
+        if not success:
+            return jsonify({"success": False, "error": "PDF conversion failed"}), 500
+        img = cv2.imread(temp_path)
+    else:
+        img_bytes = np.frombuffer(file.read(), np.uint8)
+        img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+
+    if img is None:
+        return jsonify({"success": False, "error": "Invalid image"}), 400
+
+    original_img = img.copy()  # For raw OCR
+    preprocessed_img = img.copy()
+
+    # Rotation handling
+    try:
+        angle = detect_osd_angle(preprocessed_img)
+    except pytesseract.TesseractError:
+        preprocessed_img = preprocess_for_osd(preprocessed_img)
+        angle = detect_osd_angle(preprocessed_img)
+
+    preprocessed_img = correct_rotation(preprocessed_img, angle)
+    preprocessed_img = upscale_image(preprocessed_img, scale=2.0)
+    preprocessed_img = enhance_contrast_and_sharpen(preprocessed_img)
+
+    # OCR on both versions
+    ocr_raw = paddle.ocr(original_img)
+    ocr_pre = paddle.ocr(preprocessed_img)
+
+    # Merge both results
+    combined_ocr = [ocr_raw[0] + ocr_pre[0]]
+
+    # Mask Aadhaar numbers on original image using merged OCR
+    print("\n--- OCR RAW ---")
+    for line in ocr_raw[0]:
+        print(line[1][0])
+
+    print("\n--- OCR PREPROCESSED ---")
+    for line in ocr_pre[0]:
+        print(line[1][0])
+
+    masked_img = mask_aadhaar_number(original_img, combined_ocr)
+
+    out_path = "/tmp/masked_aadhaar.jpg"
+    cv2.imwrite(out_path, masked_img)
+    cv2.imwrite("mask.png", masked_img)
+
+    return send_file(out_path, mimetype='image/jpeg')
 
 
 # if __name__ == '__main__':
